@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🚀 P-Panel
+# 🚀 ProxyStation
 
 **A Modern Cross-Platform Proxy Management Panel**
 
