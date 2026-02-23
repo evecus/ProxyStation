@@ -1,0 +1,108 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'           # 推送 tag 时触发，如 v2.0.3
+  workflow_dispatch:   # 允许手动触发
+
+permissions:
+  contents: write      # 允许创建 Release
+
+jobs:
+  build:
+    name: Build (${{ matrix.goos }}-${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          # Linux
+          - goos: linux
+            goarch: amd64
+            suffix: ""
+          - goos: linux
+            goarch: arm64
+            suffix: ""
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ---- 编译 Go 后端 ----
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod   # 自动读取 go.mod 中的 Go 版本
+          cache-dependency-path: backend/go.sum
+
+      - name: Build backend
+        working-directory: backend
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: 0
+        run: |
+          VERSION=${GITHUB_REF_NAME:-dev}
+          BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+          go build \
+            -ldflags "-s -w -X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}" \
+            -o ../dist/proxystation${{ matrix.suffix }} \
+            .
+
+      # ---- 编译前端 ----
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      # ---- 打包发布文件 ----
+      - name: Package release
+        run: |
+          TARGET="proxystation-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('-armv{0}', matrix.goarm) || '' }}"
+          mkdir -p release/$TARGET
+          
+          # 复制二进制
+          cp dist/proxystation${{ matrix.suffix }} release/$TARGET/
+          
+          # 复制前端静态文件（服务器运行时从文件系统加载）
+          mkdir -p release/$TARGET/frontend
+          cp -r frontend/dist/. release/$TARGET/frontend/
+          
+          # 打包
+          cd release
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip -r ../${TARGET}.zip $TARGET/
+          else
+            tar -czf ../${TARGET}.tar.gz $TARGET/
+          fi
+
+      # ---- 上传到 Release ----
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            *.tar.gz
+            *.zip
+          generate_release_notes: true
+
+      # ---- 仅手动触发时上传 Artifact（方便测试，不发布 Release）----
+      - name: Upload artifact (manual trigger)
+        uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          name: proxystation-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            *.tar.gz
+            *.zip
+          retention-days: 7
